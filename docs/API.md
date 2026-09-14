@@ -4,7 +4,7 @@ Prefixo `/api`. No navegador, usar o proxy do Next.js na mesma origem. A API Nes
 
 | Método | Rota | Comportamento |
 | --- | --- | --- |
-| GET | `/health` | Verifica conexão com PostgreSQL. |
+| GET | `/health` | Verifica se o banco SQLite responde. |
 | GET | `/products` | Lista produtos ativos e a variação inicial de cada um. |
 | GET | `/products/:slug` | Produto por slug; 404 se não existir. |
 | GET | `/cart` | Recupera ou cria a sessão anônima; retorna sacola. |

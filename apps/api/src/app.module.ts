@@ -31,7 +31,7 @@ class StoreController {
     private readonly db: DatabaseService,
   ) {}
   @Get("health") async health() {
-    await this.db.pool.query("SELECT 1");
+    this.db.first("SELECT 1");
     return { status: "ok", database: "connected" };
   }
   @Get("products") products() {

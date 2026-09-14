@@ -1,39 +1,28 @@
 # HARU — migração da stack
 
-Base de desenvolvimento da v5.5 em **Next.js + NestJS + TypeScript + Tailwind CSS + daisyUI + PostgreSQL**.
+Base de desenvolvimento da v5.5 em **Next.js + NestJS + TypeScript + Tailwind CSS + daisyUI + SQLite**.
+
+O banco é SQLite em arquivo, escrito no dialeto aceito pelo Cloudflare D1, para que a
+publicação futura no D1 não exija reescrever consultas.
 
 Este repositório é o fork de trabalho `uzoom333/HaruSite-migration`, branch `migration/stack`. O original `Aeromorto/HaruSite` permanece intacto.
 
 ## Começar a trabalhar
 
-Requisitos: Node.js **22.13+** (ou 24), npm e PostgreSQL. Não são necessárias chaves de pagamento para desenvolver esta entrega.
+Requisitos: Node.js **22.13+** (ou 24) e npm. Não há servidor de banco para instalar
+nem porta para liberar: o SQLite é um arquivo, criado pela própria migração. Também
+não são necessárias chaves de pagamento para desenvolver esta entrega.
 
 ```bash
 npm ci --ignore-scripts
 cp .env.example .env
-```
-
-Escolha **um** banco local:
-
-```bash
-# Ubuntu/Linux com PostgreSQL já instalado: cria cluster exclusivo na pasta .local.
-npm run db:local
-```
-
-Ou use o container isolado (não execute os dois na mesma porta):
-
-```bash
-docker compose up -d db
-```
-
-Depois:
-
-```bash
 npm run db:migrate
 npm run dev
 ```
 
-Abra **http://localhost:3000**. A API fica em `http://127.0.0.1:3001/api/health`. O banco usa a porta **55439**, diferente do serviço padrão 5432.
+Abra **http://localhost:3000**. A API fica em `http://127.0.0.1:3001/api/health`.
+O banco fica em `.local/haru.db`, ignorado pelo Git. Apagar esse arquivo e rodar
+`npm run db:migrate` de novo recria tudo do zero.
 
 O `.env` da raiz é carregado pelos dois aplicativos. Ao alterar variáveis, reinicie os processos. `WEB_ORIGIN` deve ser o endereço exato usado no navegador; para usar `http://127.0.0.1:3000`, ajuste a variável.
 
@@ -58,7 +47,7 @@ O `.env` da raiz é carregado pelos dois aplicativos. Ao alterar variáveis, rei
 
 - Oito páginas migradas, navegação React e redirecionamentos de URLs `.html`.
 - Visual, imagens, fontes, temas clara/kraft e idiomas PT/EN da v5.5.
-- Catálogo PostgreSQL, filtro de preço e ordenação.
+- Catálogo em SQLite, filtro de preço e ordenação.
 - Sacola anônima persistida no servidor, quantidades e subtotais validados pela API.
 - Consulta de cidade/estado pelo CEP via ViaCEP, com cancelamento e tratamento de falhas.
 - Salvamento e exclusão de e-mail **somente neste aparelho**, como função local.
@@ -76,7 +65,10 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Testes de API e navegador exigem `TEST_DATABASE_URL` com nome terminado em `_test` e usam os bancos locais criados acima. A suíte da API aplica migrações no banco de testes. Execute `npm test` antes do primeiro `test:e2e`. O navegador usa portas 3002/3100 para não interferir em 3001/3000.
+Testes de API e navegador exigem `TEST_DATABASE_FILE` terminado em `_test.db`, separado
+do banco de desenvolvimento. A suíte da API apaga e recria esse arquivo a cada execução,
+para que nenhum resultado dependa da rodada anterior. Execute `npm test` antes do
+primeiro `test:e2e`. O navegador usa portas 3002/3100 para não interferir em 3001/3000.
 
 Para testar o build de produção, execute em terminais separados:
 
@@ -97,7 +89,7 @@ npm run start -w @haru/web
 
 Os HTML/CSS/JS antigos permanecem na raiz e em `v5.5/` para comparação. **Edite `apps/` para trabalhar na nova stack.** `npm run build:legacy` e `npm run start:legacy` permitem consultar as versões antigas na porta 8765.
 
-A nova aplicação precisa de dois processos Node e PostgreSQL. GitHub Pages não executa essa arquitetura. O workflow desta branch valida a migração; não publica o site nem altera o original. O código pode ser acompanhado no fork público; um preview público da aplicação ainda não foi provisionado.
+A nova aplicação precisa de dois processos Node. GitHub Pages não executa essa arquitetura. O workflow desta branch valida a migração; não publica o site nem altera o original. O código pode ser acompanhado no fork público; um preview público da aplicação ainda não foi provisionado.
 
 ## Prévia visual
 

@@ -14,20 +14,16 @@ export class CartService {
     if (typeof token === "string" && /^[a-f0-9]{64}$/.test(token)) {
       const hash = createHash("sha256").update(token).digest("hex");
       if (
-        (
-          await this.db.pool.query(
-            "SELECT 1 FROM carts WHERE token_hash=$1 AND expires_at>now()",
-            [hash],
-          )
-        ).rowCount
+        this.db.first(
+          "SELECT 1 FROM carts WHERE token_hash=? AND expires_at>datetime('now')",
+          [hash],
+        )
       )
         return hash;
     }
     const next = randomBytes(32).toString("hex");
     const hash = createHash("sha256").update(next).digest("hex");
-    await this.db.pool.query("INSERT INTO carts(token_hash) VALUES($1)", [
-      hash,
-    ]);
+    this.db.run("INSERT INTO carts(token_hash) VALUES(?)", [hash]);
     res.cookie(COOKIE, next, {
       httpOnly: true,
       sameSite: "lax",
@@ -38,16 +34,14 @@ export class CartService {
     return hash;
   }
   async read(hash: string): Promise<Cart> {
-    const items = (
-      await this.db.pool.query<CartItem>(
-        `SELECT p.id,p.slug,p.name,p.image,v.sku,v.stock,
-      v.price_cents AS "priceCents",LEAST(COALESCE(v.stock,9),99)::integer AS "maxQuantity",
-      i.quantity,(i.quantity*v.price_cents)::integer AS "lineTotalCents"
+    const items = this.db.all<CartItem>(
+      `SELECT p.id,p.slug,p.name,p.image,v.sku,v.stock,
+      v.price_cents AS "priceCents", MIN(COALESCE(v.stock,9),99) AS "maxQuantity",
+      i.quantity,(i.quantity*v.price_cents) AS "lineTotalCents"
       FROM cart_items i JOIN variants v ON v.sku=i.sku JOIN products p ON p.id=v.product_id
-      WHERE i.cart_id=$1 AND p.active=true ORDER BY p.id`,
-        [hash],
-      )
-    ).rows;
+      WHERE i.cart_id=? AND p.active=1 ORDER BY p.id`,
+      [hash],
+    );
     return {
       items,
       quantity: items.reduce((n, i) => n + i.quantity, 0),
@@ -56,50 +50,45 @@ export class CartService {
     };
   }
   async set(hash: string, sku: string, quantity: number): Promise<Cart> {
-    const client = await this.db.pool.connect();
-    try {
-      await client.query("BEGIN");
-      // Uma transação por sacola evita perda de atualizações entre abas/requisições.
-      await client.query(
-        "SELECT token_hash FROM carts WHERE token_hash=$1 FOR UPDATE",
-        [hash],
+    // Sem transação interativa: o Cloudflare D1 não oferece BEGIN/COMMIT entre
+    // requisições. A regra que antes morava entre o SELECT e o INSERT foi movida
+    // para o WHERE da própria escrita, e o resultado se lê em changes. Assim não
+    // existe janela entre verificar o estoque e gravar a quantidade.
+    // O SQLite admite um único escritor por banco, então o FOR UPDATE também
+    // deixou de ser necessário para evitar perda de atualização entre abas.
+    if (quantity === 0) {
+      this.db.run("DELETE FROM cart_items WHERE cart_id=? AND sku=?", [
+        hash,
+        sku,
+      ]);
+    } else {
+      const { changes } = this.db.run(
+        `INSERT INTO cart_items(cart_id, sku, quantity)
+        SELECT ?, v.sku, ? FROM variants v JOIN products p ON p.id = v.product_id
+        WHERE v.sku = ? AND p.active = 1 AND ? <= MIN(COALESCE(v.stock, 9), 99)
+        ON CONFLICT(cart_id, sku) DO UPDATE SET quantity = excluded.quantity`,
+        [hash, quantity, sku, quantity],
       );
-      if (quantity === 0) {
-        await client.query(
-          "DELETE FROM cart_items WHERE cart_id=$1 AND sku=$2",
-          [hash, sku],
-        );
-      } else {
-        const product = (
-          await client.query(
-            `SELECT v.stock,p.active FROM variants v JOIN products p ON p.id=v.product_id WHERE v.sku=$1 FOR SHARE OF v,p`,
-            [sku],
-          )
-        ).rows[0];
-        if (!product?.active)
-          throw new BadRequestException("Produto indisponível");
-        if (quantity > Math.min(product.stock ?? 9, 99))
-          throw new BadRequestException(
-            "Quantidade acima do limite disponível",
-          );
-        await client.query(
-          `INSERT INTO cart_items(cart_id,sku,quantity) VALUES($1,$2,$3)
-          ON CONFLICT(cart_id,sku) DO UPDATE SET quantity=EXCLUDED.quantity`,
-          [hash, sku, quantity],
-        );
-      }
-      await client.query(
-        "UPDATE carts SET updated_at=now() WHERE token_hash=$1",
-        [hash],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
+      if (!changes) this.recusar(sku);
     }
+    this.db.run("UPDATE carts SET updated_at=datetime('now') WHERE token_hash=?", [
+      hash,
+    ]);
     // A sacola não reserva estoque e nunca recebe preços enviados pelo cliente.
     return this.read(hash);
+  }
+  /**
+   * Só escolhe a mensagem do erro. A decisão de recusar já foi tomada pelo WHERE
+   * da instrução acima; esta leitura não participa da regra e por isso pode
+   * acontecer fora de qualquer transação sem abrir brecha de concorrência.
+   */
+  private recusar(sku: string): never {
+    const variante = this.db.first<{ active: number }>(
+      "SELECT p.active FROM variants v JOIN products p ON p.id=v.product_id WHERE v.sku=?",
+      [sku],
+    );
+    if (!variante?.active)
+      throw new BadRequestException("Produto indisponível");
+    throw new BadRequestException("Quantidade acima do limite disponível");
   }
 }

@@ -7,7 +7,7 @@ Documento de trabalho elaborado em 2026-09-09. Não significa que as funcionalid
 Fonte local: `Levantamento de requisitos para e-commerce.csv.zip`, em Downloads, contendo um CSV com uma resposta registrada em 09/09/2026 às 10:28:44 GMT-3.
 Formulário: https://forms.gle/CMNAukhBmChhb7Kn9.
 
-Este documento registra as respostas, sem publicar o arquivo bruto. As respostas definem intenções de produto; regras incompletas permanecem explicitamente em aberto. A menção à Nuvemshop faz parte das perguntas do formulário e não confirma seu uso. A arquitetura autorizada continua Next.js + NestJS + TypeScript + Tailwind CSS + daisyUI; PostgreSQL foi a opção anunciada para esta migração.
+Este documento registra as respostas, sem publicar o arquivo bruto. As respostas definem intenções de produto; regras incompletas permanecem explicitamente em aberto. A menção à Nuvemshop faz parte das perguntas do formulário e não confirma seu uso. A arquitetura autorizada continua Next.js + NestJS + TypeScript + Tailwind CSS + daisyUI. O PostgreSQL foi a opção anunciada no início desta migração e foi substituído por SQLite (dialeto do Cloudflare D1) em 14/09/2026; ver `MIGRATION.md`.
 
 ## Objetivo
 

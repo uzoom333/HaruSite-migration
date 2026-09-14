@@ -1,10 +1,17 @@
 -- Migração inicial: preços herdados da v5.5. NULL é estoque desconhecido, não infinito.
+-- Dialeto SQLite (compatível com Cloudflare D1). Diferenças em relação ao Postgres:
+--   * não existe boolean: 0/1 em integer, com CHECK para impedir outros valores;
+--   * não existe timestamptz: texto UTC de largura fixa vindo de datetime('now'),
+--     cuja ordem lexicográfica coincide com a ordem cronológica;
+--   * DEFAULT com expressão exige parênteses;
+--   * chaves estrangeiras só são validadas com PRAGMA foreign_keys = ON na conexão
+--     (o D1 já aplica por padrão; o SQLite local precisa ligar explicitamente).
 CREATE TABLE products (
   id text PRIMARY KEY,
   slug text UNIQUE NOT NULL,
   name text NOT NULL,
   image text NOT NULL,
-  active boolean NOT NULL DEFAULT true
+  active integer NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 CREATE TABLE variants (
   sku text PRIMARY KEY,
@@ -14,9 +21,9 @@ CREATE TABLE variants (
 );
 CREATE TABLE carts (
   token_hash text PRIMARY KEY,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  expires_at timestamptz NOT NULL DEFAULT now() + interval '30 days'
+  created_at text NOT NULL DEFAULT (datetime('now')),
+  updated_at text NOT NULL DEFAULT (datetime('now')),
+  expires_at text NOT NULL DEFAULT (datetime('now', '+30 days'))
 );
 CREATE TABLE cart_items (
   cart_id text NOT NULL REFERENCES carts(token_hash) ON DELETE CASCADE,

@@ -10,28 +10,19 @@ jobs:
   validate:
     if: github.repository == 'uzoom333/HaruSite-migration'
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: haru
-          POSTGRES_PASSWORD: haru_test
-          POSTGRES_DB: haru_test
-        ports: [5432:5432]
-        options: >-
-          --health-cmd "pg_isready -U haru -d haru_test"
-          --health-interval 5s --health-timeout 3s --health-retries 10
+    # O SQLite é um arquivo: não há serviço de banco para subir nem esperar ficar saudável.
     env:
-      DATABASE_URL: postgresql://haru:haru_test@127.0.0.1:5432/haru_test
-      TEST_DATABASE_URL: postgresql://haru:haru_test@127.0.0.1:5432/haru_test
+      DATABASE_FILE: .local/haru.db
+      TEST_DATABASE_FILE: .local/haru_test.db
       COOKIE_SECURE: 'false'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
+      # npm test cria e migra o banco de testes antes de executar a suíte da API.
       - run: npm test
       - run: npm run build
       - run: npm run typecheck
@@ -42,5 +33,5 @@ jobs:
         with:
           name: browser-results
           path: test-results/
-# Next.js + NestJS precisam de runtime Node e banco; GitHub Pages não executa esta stack.
+# Next.js + NestJS precisam de runtime Node; GitHub Pages não executa esta stack.
 # Este workflow valida apenas o fork. Nenhum deploy ou push para o original é realizado.

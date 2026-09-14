@@ -171,3 +171,144 @@ Retomar sem refazer a migração: conferir o build final, repetir os testes de n
 ## Publicação do estado atual no fork
 
 Publicação solicitada pelo usuário para colaboração. O build final gerou `apps/web/.next/BUILD_ID`; a suíte de navegador ainda precisa ser repetida para os últimos ajustes. As capturas em `docs/preview/` mostram a interface na última rodada de testes, anterior aos refinamentos finais de CSS. São prévias estáticas, não uma aplicação hospedada. A nota anterior sobre ausência de commit/push descreve o momento da pausa e é substituída por esta publicação.
+
+## Troca do PostgreSQL por SQLite (rumo ao Cloudflare D1)
+
+Decisão do usuário em 14/09/2026: abandonar o PostgreSQL e adotar SQLite, com o
+Cloudflare D1 como destino. Caminho escolhido: **SQLite local primeiro**, via
+`node:sqlite` (embutido no Node 22.5+/24, sem dependência nova), escrevendo o SQL
+no dialeto que o D1 aceita. Assim a troca posterior de driver não reescreve consultas.
+
+Alternativas descartadas nesta etapa: falar com o D1 por HTTP desde já (exige conta,
+token e paga latência de rede por consulta em desenvolvimento) e mover a API para um
+Worker do Cloudflare (o NestJS não roda nesse ambiente; seria reescrita da API).
+
+### Consequência de arquitetura: sem transação interativa
+
+O D1 não oferece `BEGIN`/`COMMIT` entre requisições — apenas `batch()` atômico, sem
+ler resultado no meio para ramificar. Todo trecho que hoje faz ler → decidir → gravar
+precisa virar uma única instrução cujo `WHERE` carrega a regra, conferindo `changes()`
+depois. Para a baixa de estoque o padrão é:
+
+```sql
+UPDATE variants SET stock = stock - ?1 WHERE sku = ?2 AND stock >= ?1;
+```
+
+Isso é mais correto que ler e depois gravar, porque não existe janela entre a
+verificação e a escrita. O `SELECT ... FOR UPDATE` do Postgres também deixa de ser
+necessário: o SQLite admite um único escritor por banco e já serializa.
+
+### Concluído e verificado
+
+- `.env`/`.env.example`: `DATABASE_URL` e `TEST_DATABASE_URL` deram lugar a
+  `DATABASE_FILE` e `TEST_DATABASE_FILE`. Os caminhos são relativos à raiz do
+  repositório e precisam ser resolvidos contra ela, porque a API executa com o
+  diretório de trabalho em `apps/api`; abrir o caminho direto cria um banco vazio
+  paralelo em `apps/api/.local/`.
+- `001_catalog_cart.sql` reescrito no lugar, em dialeto SQLite. Não houve
+  modificação de SQL já aplicado: nenhum banco SQLite existia antes desta etapa.
+  O histórico de migrações recomeça com o novo motor.
+- `002_orders_stock.sql` acrescentada: `orders`, `order_items`, `stock_movements`.
+  Restrições conferidas uma a uma em banco descartável — total divergente do
+  somatório, status fora da lista, `line_total` diferente de preço × quantidade,
+  delta zero e motivo inválido são todos recusados pelo banco.
+- `scripts/migrate.cjs` migrado para `node:sqlite`. Lock consultivo removido.
+  Dois defeitos herdados da versão PostgreSQL foram corrigidos: o `ROLLBACK` do
+  bloco de erro substituía a causa real quando a falha ocorria antes de a transação
+  abrir, e o tratador final descartava o objeto de erro, tornando falha de dialeto
+  indistinguível de falha de caminho.
+- Migração aplicada e idempotente na segunda execução; `typecheck` passa.
+
+### Banco fictício para treino de consulta
+
+`scripts/semear-vendas-ficticias.cjs` popula `.local/haru_ficticio.db` com pedidos
+**inventados**, em gerador determinístico, para exercitar consulta analítica
+(RF18, RF21, RF25) antes de existir venda real. O script recusa executar se
+`DATABASE_FILE` ou `TEST_DATABASE_FILE` apontarem para esse arquivo. Esses dados
+não representam operação do Haru e nenhuma tela os lê.
+`scripts/consultas.sql` reúne as consultas de relatório e `scripts/consultar.cjs`
+as executa. Somente `receita-por-mes` está escrita; as demais são exercícios abertos.
+
+### Pendente nesta troca
+
+1. `src/database.service.ts`: substituir o `Pool` do `pg` por `node:sqlite`,
+   espelhando a forma do D1 (`all`/`first`/`run`). **A API não sobe até isso.**
+2. `src/catalog.service.ts`: `$1` para `?1`, `LEAST` para `MIN`, remover `::integer`,
+   `active = true` para `active = 1`.
+3. `src/cart.service.ts`: eliminar a transação interativa conforme a seção acima.
+4. `test/store.test.cjs` e `playwright.config.ts`: a validação do sufixo `_test`
+   usa `new URL()`, que não se aplica a caminho de arquivo.
+5. `apps/api/package.json`: remover `pg` e `@types/pg`.
+6. `.github/workflows/pages.yml`: remover o serviço PostgreSQL.
+7. README e AGENTS.md: as instruções de `npm run db:local` e Docker Compose
+   descrevem o PostgreSQL e ficaram incorretas. Reescrever depois dos itens 1 a 3,
+   quando os comandos pararem de mudar.
+
+Decidir a estrutura de cupom, cadastro de cliente e emissão fiscal continua fora
+desta etapa: são regras comerciais pendentes no CSV, não estrutura ditada pelo domínio.
+
+### Implementação concluída em 14/09/2026
+
+`database.service.ts` reescrito sobre `node:sqlite`, expondo `all`/`first`/`run`.
+Três pragmas na abertura: `foreign_keys = ON` (o SQLite não valida por padrão, o D1
+valida), `journal_mode = WAL` (leitura não espera a escrita) e `busy_timeout = 5000`
+(esperar em vez de falhar no primeiro conflito de escrita). O caminho do banco é
+resolvido contra a raiz do repositório, igual ao `migrate.cjs`.
+
+`catalog.service.ts`: `$1` virou `?`, `LEAST` virou `MIN`, `::integer` removido,
+`active = true` virou `active = 1`.
+
+`cart.service.ts`: a transação interativa foi eliminada. A regra de estoque passou
+para o `WHERE` da própria escrita e o resultado se lê em `changes`:
+
+```sql
+INSERT INTO cart_items(cart_id, sku, quantity)
+SELECT ?, v.sku, ? FROM variants v JOIN products p ON p.id = v.product_id
+WHERE v.sku = ? AND p.active = 1 AND ? <= MIN(COALESCE(v.stock, 9), 99)
+ON CONFLICT(cart_id, sku) DO UPDATE SET quantity = excluded.quantity;
+```
+
+A leitura que escolhe a mensagem de erro acontece depois e fora de qualquer
+transação: ela não participa da decisão, apenas distingue produto inativo de
+quantidade acima do limite.
+
+`app.module.ts`: o `/api/health` deixou de usar o pool. `pg` e `@types/pg` removidos.
+
+Verificado com a API em execução: `/api/health`, `/api/products`, `/api/products/:slug`
+e 404 para slug inexistente; na sacola, aceitar quantidade válida, recusar 50 quando
+o limite é 9, recusar SKU inexistente, atualizar quantidade sem duplicar linha e
+remover item com quantidade zero. O site em `localhost:3000` renderiza as páginas de
+produto e o proxy do Next entrega catálogo e sacola.
+
+Duas suposições anteriores foram desmentidas na prática: as linhas com protótipo nulo
+do `node:sqlite` funcionam com espalhamento e `JSON.stringify` sem cópia, e `changes`
+chega como número em execução — a conversão com `Number()` permanece apenas porque o
+tipo declarado é `number | bigint`.
+
+Pendências desta troca, atualizadas: restam os testes (`store.test.cjs` ainda importa
+`pg`, que não está mais instalado, e a validação do sufixo `_test` usa `new URL()` em
+caminho de arquivo), o `playwright.config.ts`, o workflow do GitHub e a reescrita do
+README e do AGENTS.md.
+
+### Pendências da troca encerradas em 14/09/2026
+
+`apps/api/test/store.test.cjs` passou a usar `node:sqlite`. A validação do banco de
+testes deixou de usar `new URL()` — agora exige nome terminado em `_test.db` e recusa
+apontar para o banco de desenvolvimento. O arquivo é apagado antes de cada execução,
+incluindo os companheiros `-wal` e `-shm` do journal, para que nenhum resultado dependa
+da rodada anterior.
+
+`playwright.config.ts` passou a exigir `TEST_DATABASE_FILE` e a repassar `DATABASE_FILE`
+aos servidores de teste.
+
+O workflow perdeu o serviço PostgreSQL: não há banco a subir nem verificação de saúde a
+esperar. O Node subiu para 24.
+
+Removidos por terem virado ferramental morto: `compose.yaml`, `scripts/setup-local-db.cjs`
+(importava `pg`, que não está mais instalado) e `scripts/docker-test-db.sql`. O script
+`db:local` saiu do `package.json`. README, AGENTS.md, API.md e REQUIREMENTS.md foram
+reescritos para descrever o banco em arquivo.
+
+Verificação completa após as mudanças: 14 testes legados, 5 da API e 8 de navegador
+(desktop e mobile) passando, com `typecheck` e `build` limpos. A troca de motor está
+encerrada; o que resta do projeto são as etapas de produto descritas em `REQUIREMENTS.md`.

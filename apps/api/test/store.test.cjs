@@ -1,19 +1,28 @@
 const {test,before,after}=require('node:test');
 const assert=require('node:assert/strict');
 const {spawnSync}=require('node:child_process');
+const {DatabaseSync}=require('node:sqlite');
+const path=require('node:path');
+const fs=require('node:fs');
 const request=require('supertest');
-const {Pool}=require('pg');
-let app,pool,server;
+let app,db,server;
+// Mesma resolução usada por migrate.cjs e database.service.ts: caminho relativo à raiz.
+const ROOT=path.resolve(__dirname,'../../..');
 before(async()=>{
- const url=process.env.TEST_DATABASE_URL;
- if(!url||!new URL(url).pathname.endsWith('_test'))throw new Error('TEST_DATABASE_URL deve apontar para banco com sufixo _test.');
- process.env.DATABASE_URL=url;
+ const relativo=process.env.TEST_DATABASE_FILE;
+ if(!relativo||!path.basename(relativo).endsWith('_test.db'))throw new Error('TEST_DATABASE_FILE deve apontar para arquivo terminado em _test.db.');
+ const arquivo=path.resolve(ROOT,relativo);
+ if(arquivo===path.resolve(ROOT,process.env.DATABASE_FILE||'.local/haru.db'))throw new Error('TEST_DATABASE_FILE não pode ser o banco de desenvolvimento.');
+ // Cada execução parte de banco vazio: resultado de teste não pode depender da rodada anterior.
+ // Os arquivos -wal e -shm acompanham o journal WAL e precisam sair junto.
+ for(const sufixo of ['','-wal','-shm'])fs.rmSync(arquivo+sufixo,{force:true});
+ process.env.DATABASE_FILE=relativo;
  const migration=spawnSync(process.execPath,['scripts/migrate.cjs'],{env:process.env,encoding:'utf8'});
  assert.equal(migration.status,0,migration.stderr);
- pool=new Pool({connectionString:url});
+ db=new DatabaseSync(arquivo);
  const {createApp}=require('../dist/bootstrap');app=await createApp();await app.init();server=app.getHttpServer();
 });
-after(async()=>{await app?.close();await pool?.end();});
+after(async()=>{await app?.close();db?.close();});
 const mutate=(agent,body)=>agent.put('/api/cart/items').set('X-Haru-Request','1').send(body);
 test('catálogo real mantém preços em centavos e retorna 404 para produto inexistente',async()=>{
  const r=await request(server).get('/api/products').expect(200);assert.equal(r.body.length,3);assert.equal(r.body[0].priceCents,4800);
@@ -37,13 +46,15 @@ test('API rejeita adulteração de preço, frações, excesso e CSRF simples',as
 });
 test('saldo confirmado limita quantidade; remoção continua possível com estoque zero',async()=>{
  const agent=request.agent(server);await agent.get('/api/cart');
+ // A API usa outra conexão para o mesmo arquivo; com WAL ela enxerga estas escritas já confirmadas.
+ const ajustar=db.prepare('UPDATE variants SET stock=? WHERE sku=?');
  try {
-  await pool.query("UPDATE variants SET stock=2 WHERE sku='HARU-ESCOVA'");
+  ajustar.run(2,'HARU-ESCOVA');
   await mutate(agent,{sku:'HARU-ESCOVA',quantity:3}).expect(400);
   await mutate(agent,{sku:'HARU-ESCOVA',quantity:2}).expect(200);
-  await pool.query("UPDATE variants SET stock=0 WHERE sku='HARU-ESCOVA'");
+  ajustar.run(0,'HARU-ESCOVA');
   await mutate(agent,{sku:'HARU-ESCOVA',quantity:0}).expect(200);
- }finally{await pool.query("UPDATE variants SET stock=NULL WHERE sku='HARU-ESCOVA'");}
+ }finally{ajustar.run(null,'HARU-ESCOVA');}
 });
 test('consultas de CEP validam formato e tratam sucesso, inexistência e falha externa',async()=>{
  const {PostalService}=require('../dist/postal.service');const svc=new PostalService();const original=global.fetch;
