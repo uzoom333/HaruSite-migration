@@ -72,6 +72,8 @@ jobs:
         env:
           # e.g. /HaruSite, or empty when a custom domain serves the site from the root
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          # URL da API de frete; vazia mantém a estimativa por zona.
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

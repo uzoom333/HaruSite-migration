@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useId } from "react";
+import { useEffect, useRef, useState, useId } from "react";
 import Image from "next/image";
 import {
   Minus,
@@ -15,47 +15,15 @@ import {
 import { useCart, type CheckoutData } from "./cartContext";
 import { useI18n, money } from "@/app/_lib/i18n";
 import { getProduct } from "@/app/_data/products";
+import {
+  FRETE_REAL,
+  freteKey,
+  moneyBr,
+  quoteFrete,
+  type FreteRate,
+} from "@/app/_lib/frete";
 
-const UF_ZONE: Record<string, string> = {
-  SP: "se",
-  RJ: "se",
-  ES: "se",
-  MG: "se",
-  PR: "s",
-  SC: "s",
-  RS: "s",
-  DF: "co",
-  GO: "co",
-  MT: "co",
-  MS: "co",
-  BA: "ne",
-  SE: "ne",
-  AL: "ne",
-  PE: "ne",
-  PB: "ne",
-  RN: "ne",
-  CE: "ne",
-  PI: "ne",
-  MA: "ne",
-  AM: "n",
-  PA: "n",
-  AC: "n",
-  RO: "n",
-  RR: "n",
-  AP: "n",
-  TO: "n",
-};
-
-const ZONE_RATE: Record<
-  string,
-  { pac: number; sedex: number; pacDays: [number, number]; sedexDays: [number, number] }
-> = {
-  se: { pac: 14.9, sedex: 24.9, pacDays: [4, 7], sedexDays: [1, 3] },
-  s: { pac: 18.9, sedex: 29.9, pacDays: [5, 8], sedexDays: [2, 4] },
-  co: { pac: 22.9, sedex: 34.9, pacDays: [6, 10], sedexDays: [3, 5] },
-  ne: { pac: 27.9, sedex: 42.9, pacDays: [7, 12], sedexDays: [4, 6] },
-  n: { pac: 32.9, sedex: 49.9, pacDays: [8, 14], sedexDays: [5, 8] },
-};
+const NO_RATES: FreteRate[] = [];
 
 function BasketIcon() {
   return (
@@ -123,55 +91,84 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
     return product ? t(`${product.prefix}.name`) : slug;
   };
 
-  // Cálculo de peso total para frete
-  const totalWeight = items.reduce((sum, item) => {
-    const p = getProduct(item.slug);
-    return sum + (p?.weight || 1) * item.qty;
-  }, 0);
-
-  const factor =
-    totalWeight <= 1
-      ? 1
-      : totalWeight <= 2
-        ? 1.15
-        : totalWeight <= 4
-          ? 1.28
-          : 1.4;
-
-  const rates = checkData.uf
-    ? (() => {
-        const zone = UF_ZONE[checkData.uf] || "se";
-        const base = ZONE_RATE[zone];
-        return {
-          pac: base.pac * factor,
-          pacDays: base.pacDays,
-          sedex: base.sedex * factor,
-          sedexDays: base.sedexDays,
-        };
-      })()
-    : null;
+  // Cotação do frete: só vale para o CEP e os itens com que foi pedida.
+  const cepDigits = checkData.cep.replace(/\D/g, "");
+  const canQuote =
+    isOpen &&
+    view === "check" &&
+    cepDigits.length === 8 &&
+    !!checkData.uf &&
+    items.length > 0 &&
+    !cepLoading;
+  const quoteKey = freteKey(cepDigits, checkData.uf, items);
+  const [quote, setQuote] = useState<{
+    key: string;
+    rates: FreteRate[];
+    error: boolean;
+  } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const current = canQuote && quote?.key === quoteKey ? quote : null;
+  const rates = current?.rates ?? NO_RATES;
+  const selected = rates.find((rate) => rate.id === checkData.service) ?? null;
+  const shippingPrice = selected?.price ?? 0;
 
   useEffect(() => {
-    if (rates) {
-      const price = checkData.service === "sedex" ? rates.sedex : rates.pac;
-      if (checkData.shippingPrice !== price) {
-        updateCheckData({ shippingPrice: price });
-      }
+    if (!canQuote) return;
+    let active = true;
+    quoteFrete(cepDigits, checkData.uf, items)
+      .then((list) => {
+        if (active) setQuote({ key: quoteKey, rates: list, error: false });
+      })
+      .catch(() => {
+        if (active) setQuote({ key: quoteKey, rates: [], error: true });
+      });
+    return () => {
+      active = false;
+    };
+    // quoteKey já resume CEP, UF e itens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canQuote, quoteKey, attempt]);
+
+  // Sem escolha válida, fica o primeiro serviço da lista.
+  useEffect(() => {
+    const rate = selected ?? rates[0];
+    if (!rate) return;
+    if (
+      checkData.service !== rate.id ||
+      checkData.serviceName !== rate.name ||
+      checkData.shippingPrice !== rate.price
+    ) {
+      updateCheckData({
+        service: rate.id,
+        serviceName: rate.name,
+        shippingPrice: rate.price,
+      });
     }
-  }, [rates, checkData.service, checkData.shippingPrice, updateCheckData]);
+  }, [
+    selected,
+    rates,
+    checkData.service,
+    checkData.serviceName,
+    checkData.shippingPrice,
+    updateCheckData,
+  ]);
 
   // Busca automática do CEP
+  const lastCep = useRef("");
   const handleCepChange = async (rawVal: string) => {
     const digits = rawVal.replace(/\D/g, "").slice(0, 8);
     const masked = digits.replace(/^(\d{5})(\d)/, "$1-$2");
-    updateCheckData({ cep: masked });
+    lastCep.current = digits;
+    updateCheckData({ cep: masked, uf: "", city: "" });
     setCepError("");
 
+    setCepLoading(digits.length === 8);
     if (digits.length === 8) {
-      setCepLoading(true);
       try {
         const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
         const data = await res.json();
+        // Resposta de um CEP que já foi trocado não sobrescreve o atual.
+        if (lastCep.current !== digits) return;
         if (data.erro) {
           setCepError(t("cep.err"));
         } else {
@@ -179,18 +176,19 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
             street: data.logradouro || "",
             district: data.bairro || "",
             city: data.localidade || "",
-            uf: data.uf || "SP",
+            uf: data.uf || "",
           });
         }
       } catch {
-        setCepError(t("cep.err"));
+        if (lastCep.current === digits) setCepError(t("cep.err"));
       } finally {
-        setCepLoading(false);
+        if (lastCep.current === digits) setCepLoading(false);
       }
     }
   };
 
   const handlePayOrder = () => {
+    if (!selected) return;
     const orderId = `haru-${Date.now()}`;
     const order = {
       id: orderId,
@@ -207,10 +205,12 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
         uf: checkData.uf,
       },
       shipping: {
-        service: checkData.service,
-        price: checkData.shippingPrice,
+        service: selected.id,
+        name: selected.name,
+        price: selected.price,
+        estimate: !FRETE_REAL,
       },
-      total: total + checkData.shippingPrice,
+      total: total + shippingPrice,
       method: checkData.method,
     };
     try {
@@ -459,41 +459,60 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
                       )}
                     </div>
 
-                    {rates && (
+                    {canQuote && (
                       <div className="border rounded p-3 bg-white/40 flex flex-col gap-2 my-2">
                         <p className="text-xs uppercase tracking-widest text-muted font-medium">
-                          Opções de Envio ({checkData.city} — {checkData.uf})
+                          {t("ship.options")} ({checkData.city} — {checkData.uf})
                         </p>
-                        <label className="flex items-center justify-between text-xs cursor-pointer">
-                          <span className="flex items-center gap-2">
-                            <input
-                              type="radio"
-                              name="shipping"
-                              className="radio radio-xs"
-                              checked={checkData.service === "pac"}
-                              onChange={() =>
-                                updateCheckData({ service: "pac" })
-                              }
-                            />
-                            <span>PAC ({rates.pacDays[0]} a {rates.pacDays[1]} dias)</span>
+                        {!current && (
+                          <span className="text-xs text-muted">
+                            {t("ship.loading")}
                           </span>
-                          <span className="font-medium">{money(rates.pac)}</span>
-                        </label>
-                        <label className="flex items-center justify-between text-xs cursor-pointer">
-                          <span className="flex items-center gap-2">
-                            <input
-                              type="radio"
-                              name="shipping"
-                              className="radio radio-xs"
-                              checked={checkData.service === "sedex"}
-                              onChange={() =>
-                                updateCheckData({ service: "sedex" })
-                              }
-                            />
-                            <span>SEDEX ({rates.sedexDays[0]} a {rates.sedexDays[1]} dias)</span>
+                        )}
+                        {current?.error && (
+                          <span className="flex items-center justify-between text-xs text-error">
+                            {t("ship.err")}
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs"
+                              onClick={() => {
+                                setQuote(null);
+                                setAttempt((value) => value + 1);
+                              }}
+                            >
+                              {t("ship.retry")}
+                            </button>
                           </span>
-                          <span className="font-medium">{money(rates.sedex)}</span>
-                        </label>
+                        )}
+                        {current && !current.error && rates.length === 0 && (
+                          <span className="text-xs text-error">
+                            {t("ship.none")}
+                          </span>
+                        )}
+                        {rates.map((rate) => (
+                          <label
+                            key={rate.id}
+                            className="flex items-center justify-between text-xs cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name={`${drawerId}-shipping`}
+                                className="radio radio-xs"
+                                checked={checkData.service === rate.id}
+                                onChange={() =>
+                                  updateCheckData({ service: rate.id })
+                                }
+                              />
+                              <span>
+                                {rate.name} (
+                                {t("product.daysRange", { a: rate.min, b: rate.max })}
+                                )
+                              </span>
+                            </span>
+                            <span className="font-medium">{moneyBr(rate.price)}</span>
+                          </label>
+                        ))}
                       </div>
                     )}
 
@@ -557,7 +576,7 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
 
                     <button
                       type="button"
-                      disabled={!checkData.street || !checkData.number}
+                      disabled={!checkData.street || !checkData.number || !selected}
                       onClick={() => setStep("pay")}
                       className="btn bg-olive-deep text-white font-light tracking-widest uppercase text-xs mt-3"
                     >
@@ -574,12 +593,12 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
                         <span>{money(total)}</span>
                       </div>
                       <div className="flex justify-between text-xs text-muted">
-                        <span>Frete ({checkData.service.toUpperCase()})</span>
-                        <span>{money(checkData.shippingPrice)}</span>
+                        <span>{t("product.ship")}{selected ? ` (${selected.name})` : ""}</span>
+                        <span>{moneyBr(shippingPrice)}</span>
                       </div>
                       <div className="flex justify-between text-sm font-semibold border-t pt-2 mt-1">
                         <span>Total</span>
-                        <span>{money(total + checkData.shippingPrice)}</span>
+                        <span>{moneyBr(total + shippingPrice)}</span>
                       </div>
                     </div>
 
@@ -648,9 +667,10 @@ export default function CartDrawer({ id: customId }: { id?: string }) {
                     <button
                       type="button"
                       onClick={handlePayOrder}
+                      disabled={!selected}
                       className="btn bg-olive-deep text-white font-light tracking-widest uppercase text-xs mt-3"
                     >
-                      {t("check.pay")} — {money(total + checkData.shippingPrice)}
+                      {t("check.pay")} — {moneyBr(total + shippingPrice)}
                     </button>
                   </div>
                 )}

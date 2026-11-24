@@ -279,7 +279,13 @@
     "check.method": "Forma de pagamento",
     "check.nextPay": "Avançar para pagamento",
     "cep.looking": "Buscando endereço...",
-    "cep.err": "CEP não encontrado."
+    "cep.err": "CEP não encontrado.",
+    "ship.options": "Opções de envio",
+    "ship.loading": "Calculando o frete...",
+    "ship.err": "Não foi possível calcular o frete agora.",
+    "ship.retry": "Tentar de novo",
+    "ship.none": "Nenhum envio disponível para este CEP.",
+    "ship.note": "Preço e prazo para uma unidade. O valor final é o da cesta."
   },
   "en": {
     "skip": "Skip to content",
@@ -561,6 +567,12 @@
     "check.method": "Payment method",
     "check.nextPay": "Proceed to payment",
     "cep.looking": "Looking up address...",
-    "cep.err": "Postal code not found."
+    "cep.err": "Postal code not found.",
+    "ship.options": "Shipping options",
+    "ship.loading": "Calculating shipping...",
+    "ship.err": "Shipping could not be calculated right now.",
+    "ship.retry": "Try again",
+    "ship.none": "No shipping available for this postal code.",
+    "ship.note": "Price and time for one unit. The final amount is the one in the bag."
   }
 }

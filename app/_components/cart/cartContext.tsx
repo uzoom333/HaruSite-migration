@@ -31,7 +31,9 @@ export interface CheckoutData {
   district: string;
   city: string;
   uf: string;
-  service: "pac" | "sedex";
+  /** Id do serviço de envio e o nome mostrado ao cliente. */
+  service: string;
+  serviceName: string;
   shippingPrice: number;
   method: "pix" | "apple" | "card" | "boleto";
 }
@@ -70,7 +72,8 @@ const DEFAULT_CHECK: CheckoutData = {
   district: "",
   city: "",
   uf: "",
-  service: "pac",
+  service: "",
+  serviceName: "",
   shippingPrice: 0,
   method: "pix",
 };

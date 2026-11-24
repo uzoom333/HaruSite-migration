@@ -202,7 +202,7 @@ export default function ProductPage({ product, collection }: ProductPageProps) {
 
           {/* Calculadora de Frete */}
           <div className="pt-2">
-            <Shipping weight={product.weight} />
+            <Shipping slug={product.slug} />
           </div>
 
           {/* Métodos de Pagamento */}
